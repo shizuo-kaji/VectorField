@@ -11,7 +11,10 @@ from scipy.ndimage import gaussian_filter,sobel
 import cv2
 import torch
 import torch.nn as nn
-
+try:
+    from torch_topological.nn import SummaryStatisticLoss,CubicalComplex,WassersteinDistance
+except:
+    None
 
 ## compute the normal direction of the region X using image processing tech: gradient of gaussian blur
 def boundary_normal(img, sigma=5):
@@ -39,11 +42,11 @@ def boundary_normal(img, sigma=5):
 
 ## DL model for approximating the hamiltonian
 class HNN(torch.nn.Module):
-    def __init__(self,  input_dim=2, hidden_dim=200, output_dim=1):
+    def __init__(self,  input_dim=2, hidden_dim=200, output_dim=1, grid_X=None, grid_Y=None):
         super(HNN, self).__init__()
         self.linear1 = torch.nn.Linear(input_dim, hidden_dim)
         self.linear2 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.linear3 = torch.nn.Linear(hidden_dim, output_dim, bias=None)
+        self.linear3 = torch.nn.Linear(hidden_dim, output_dim, bias=None) # constant bias does not make any difference for the hamiltonian function
 
         for l in [self.linear1, self.linear2, self.linear3]:
             torch.nn.init.orthogonal_(l.weight) # use a principled initialization
@@ -51,20 +54,31 @@ class HNN(torch.nn.Module):
         # complex form
         self.J = torch.tensor([[0,1],[-1,0]], dtype=torch.float)
         
+        # grid point coordinates
+        self.grid_X = torch.tensor(grid_X, requires_grad=False, dtype=torch.float32)
+        self.grid_Y = torch.tensor(grid_Y, requires_grad=False, dtype=torch.float32)
+        
     def forward(self, x):
-        h = torch.relu( self.linear1(x) )
-        h = torch.relu( self.linear2(h) )
+        #nonlin = torch.relu
+        nonlin = torch.tanh # this is better than relu
+        h = nonlin( self.linear1(x) )
+        h = nonlin( self.linear2(h) )
         return self.linear3(h)
 
-    def vfield(self, x):
+    def vfield(self, x=None):
+        if x is None:
+            x = torch.stack([self.grid_X,self.grid_Y],axis=-1).requires_grad_(True)
         H = self.forward(x)
         dH = torch.autograd.grad(H.sum(), x, create_graph=True)[0]
         return(dH @ self.J)
     
-    
+    def hamiltonian(self):
+        all_x = torch.stack([self.grid_X,self.grid_Y],axis=-1).requires_grad_(False)
+        H_estimated=self.forward(all_x).reshape(self.grid_X.shape)
+        return(H_estimated)
     
 # train the model
-def fit_HNN(X,Y,vx,vy,bd_x,bd_y,bd_vx,bd_vy,epochs = 10000,batch_size=None,lr = 1e-3,lambda_boundary = 1.0, hidden_dim=100, device=None):
+def fit_HNN(X,Y,vx,vy,bd_x,bd_y,bd_vx,bd_vy,model=None,epochs = 10000,batch_size=None,lr = 1e-3,lambda_boundary = 1.0, lambda_PH0_life=0, hidden_dim=100, device=None):
     if device is None: 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -77,21 +91,37 @@ def fit_HNN(X,Y,vx,vy,bd_x,bd_y,bd_vx,bd_vy,epochs = 10000,batch_size=None,lr = 
 
     if batch_size is None:
         batch_size = X.size 
-    model = HNN(hidden_dim=hidden_dim).to(device)
+    if model is None:
+        model = HNN(hidden_dim=hidden_dim).to(device)
     optim = torch.optim.Adam(model.parameters(), lr, weight_decay=0)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min')
     loss_func = nn.MSELoss(reduction='mean').to(device)
+    bd_loss = torch.tensor([0])
+    toploss = torch.tensor([0])
+    
+    if lambda_PH0_life>0:
+        cpx = CubicalComplex(dim=2, superlevel=False)
+        toploss_func = SummaryStatisticLoss(summary_statistic='total_persistence',p=1,q=1)
 
     for step in range(epochs):
         ixs = torch.randperm(x_list.shape[0])[:batch_size]
         v_estimated = model.vfield(x_list[ixs])
         loss = loss_func(v_list[ixs], v_estimated)
         #print(bd_n.shape,(torch.sum(bd_v_estimated*bd_n, dim=1)**2).sum())
-
+        fitting_MSE_loss = loss.item()
+        
         ## slip boundary
         if lambda_boundary>0:
             bd_v_estimated = model.vfield(bd_x)
             bd_loss = (torch.sum(bd_v_estimated*bd_n, dim=1)**2).sum()
             loss += lambda_boundary*bd_loss
+        
+        ## topological loss: small total PH0 life time
+        if lambda_PH0_life>0:
+            H = model(x_list)
+            toploss=toploss_func(cpx(H))
+            #toploss=cpx(H)[0].diagram.diff().abs().sum() # L1 of PH0 life
+            loss += lambda_PH0_life*toploss
 
         ## directly with H    
         #H_estimated = model(x[ixs])
@@ -100,6 +130,8 @@ def fit_HNN(X,Y,vx,vy,bd_x,bd_y,bd_vx,bd_vy,epochs = 10000,batch_size=None,lr = 
         optim.zero_grad()
         loss.backward()
         optim.step()
+        scheduler.step(loss)
+        
         if step % (epochs//10) == 0:
-            print(f'iter {step}, loss {loss.item()}, boundary loss {bd_loss.item()}')
+            print(f'iter {step}, total loss {loss.item()}, MSE {fitting_MSE_loss}, boundary loss {bd_loss.item()}, topology loss {toploss.item()}')
     return(model)
