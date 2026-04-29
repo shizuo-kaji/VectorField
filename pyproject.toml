@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vectorfield"
+version = "0.1.0"
+description = "Modern utilities for 2D vector field analysis and visualization"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Shizuo Kaji" },
+]
+keywords = ["vector-field", "hamiltonian", "koopman", "visualization", "interpolation"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+  "matplotlib>=3.7",
+  "numpy>=1.24",
+  "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+hnn = [
+  "opencv-python>=4.8",
+  "torch>=2.1",
+]
+hhd = [
+  "pynhhd @ git+https://github.com/bhatiaharsh/naturalHHD.git@master#subdirectory=pynhhd-v1.1",
+]
+notebook = [
+  "jupyter>=1.0",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
